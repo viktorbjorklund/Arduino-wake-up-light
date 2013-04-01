@@ -40,19 +40,19 @@ unsigned long lastLED_TIME; // för timern till lcd's ljus
 
 const int held = 2;
 
-int hr = 11;
-int mins = 56;
+int hr = 0;
+int mins = 0;
 int sec = 0;
 int Num_day;
 char* day[7] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}; // en array med dagarna
 
-int alarm_hr = 12; // the time to wake
+int alarm_hr = 0; // the time to wake
 int alarm_min = 0;
 
 int start_hr; // tiderna för att börja 30 minuter innan man ska vakna
 int start_min;
 
-const int wake_interval = 3; // hur många minuter innan lampan ska börja dimma
+const int wake_interval = 30; // hur många minuter innan lampan ska börja dimma
 
 int analog; // värdet för lampan
 
@@ -102,7 +102,7 @@ void setup() {
   RTC.set(DS1307_DOW,7);       //set the day of the week
   RTC.start();
   
-  creatnew_time(wake_interval); // ställ tiden
+  setClock(); // ställ tiden
 }
  
 void loop() {
