@@ -1,0 +1,490 @@
+#include <buttons.h>
+#include <WProgram.h>
+#include <Wire.h>
+#include <DS1307.h> 
+
+
+// include the library code:
+#include <LiquidCrystal.h>
+
+// initialize the library with the numbers of the interface pins
+LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
+
+const int light = 6;
+boolean lightState = LOW;
+
+const int lcdLED = 13; // led till lcd'n
+
+// knapparna
+const int backPin = 8;
+const int nextPin = 9;
+const int selectPin = 7;
+const int menuPin = 10;
+
+Button onoff_back;
+Button select;
+Button menu;
+Button next;
+
+const int buzzer = A0;
+boolean buzzerState = false;
+
+unsigned long prev = 0; // sparar tiden för piezon
+
+boolean last = LOW; // tillhör funktionen för att läsa knappen
+boolean lastButton = LOW;
+unsigned long lastTime;
+unsigned int holdTime = 1500;
+
+unsigned long lastLED_TIME; // för timern till lcd's ljus
+
+const int held = 2;
+
+int hr = 11;
+int mins = 56;
+int sec = 0;
+int Num_day;
+char* day[7] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}; // en array med dagarna
+
+int alarm_hr = 12; // the time to wake
+int alarm_min = 0;
+
+int start_hr; // tiderna för att börja 30 minuter innan man ska vakna
+int start_min;
+
+const int wake_interval = 3; // hur många minuter innan lampan ska börja dimma
+
+int analog; // värdet för lampan
+
+boolean alarmReady = false; // värdet som säger när larmet är klart
+boolean alarm = false; 
+boolean wakeState = false; // om man ska ha väckning eller inte
+
+const int buttonDelay = 100;
+
+int alarmSound = 1; // vilket ljud som ska användas för väckning
+
+void setup() {
+  // set up the LCD's number of columns and rows: 
+  lcd.begin(16, 2);
+  pinMode(light, OUTPUT);
+  pinMode(lcdLED, OUTPUT);
+
+  // set up the button functions for the library
+  onoff_back.assign(backPin);
+  onoff_back.turnOnPullUp();
+  onoff_back.setMode(MemoryTimer);
+  onoff_back.setTimer(holdTime);
+  onoff_back.setRefresh(buttonDelay);
+  
+  select.assign(selectPin);
+  select.turnOnPullUp();
+  select.setMode(MemoryTimer);
+  select.setTimer(holdTime);
+  select.setRefresh(buttonDelay);
+  
+  menu.assign(menuPin);
+  menu.turnOnPullUp();
+  menu.setMode(MemoryTimer);
+  menu.setTimer(holdTime);
+  menu.setRefresh(buttonDelay);
+  
+  next.assign(nextPin);
+  next.turnOnPullUp();
+  next.setMode(MemoryTimer);
+  next.setTimer(holdTime);
+  next.setRefresh(buttonDelay);
+  
+  RTC.stop();
+  RTC.set(DS1307_SEC,sec);        //set the seconds
+  RTC.set(DS1307_MIN,mins);     //set the minutes
+  RTC.set(DS1307_HR,hr);       //set the hours
+  RTC.set(DS1307_DOW,7);       //set the day of the week
+  RTC.start();
+  
+  creatnew_time(wake_interval); // ställ tiden
+}
+ 
+void loop() {
+  // Turn off the blinking cursor:
+  printTime();
+  checkButton(); // kolla om någon knapp är tryckt. 
+  lcd_LED(); // tänd ljuset till lcd'n om en knapp är tryckt
+  
+  if(wakeState == true && hr == start_hr && mins == start_min && sec == 0) { // när det är dags att börja dimma lampan
+    
+    start_wake();
+  }
+  
+  if(alarmReady && hr == alarm_hr && mins == alarm_min) { // när dimmningen är klar, och väknings tiden är inne
+    
+    alarm = true; // starta larmet
+    alarmReady = false; // återställ alarmReady
+  }
+  
+  if(alarm == true) { // när dimmningen är klar och det är dags att vakna. "alarm" ser till att larmet kan bara gå igång om ljuset har dimmat.
+    
+    if(onoff_back.check() == ON) // är knappen tryck, stäng larmet
+      quitWake();
+    lcd.setCursor(0,1);
+    buzzerOn(); // sound alarm
+  }
+}
+
+void printTime() { // skriver ut tiden på lcd'n
+  
+  // få värderna från DS1307'n
+  hr = RTC.get(DS1307_HR,true); // timmar
+  mins = RTC.get(DS1307_MIN,false); // minuter
+  sec = RTC.get(DS1307_SEC,false); // sekunder
+  Num_day = RTC.get(DS1307_DOW,false)-1; // dagar, ta bort 1, det är för att strängen börjar med 0
+  
+  lcd.setCursor(0,0);
+  
+  if(hr < 10) // om klockan är 0
+    lcd.print("0");
+  lcd.print(hr);
+  
+  lcd.print(":");
+  
+  if(mins < 10)
+    lcd.print("0");
+  lcd.print(mins);
+  
+  lcd.print(":");
+  
+  if(sec < 10)
+    lcd.print("0");
+  lcd.print(sec);
+  
+  lcd.print("  ");
+  
+  lcd.print(day[Num_day]); // skriv vilken dag det är
+  lcd.print("   ");
+  
+  lcd.setCursor(0,1); // skriv om larmet är på eller ej
+  lcd.print("Alarm ");
+  if(wakeState)
+    lcd.print("ON ");
+  else
+    lcd.print("OFF ");
+}
+
+void creatnew_time(int time_interval) { // tiden för att börja lysa up lampan
+  
+  start_hr = alarm_hr; // samma som larmet
+  start_min = alarm_min - time_interval; // ta bort 30 minuter
+  
+  if(start_min < 0) { // om minuterna blir mindre än 0, ex 25 min - 30 = -25. Vi månste ta bort en timma från start_hr
+    
+    start_hr = start_hr -1; // ta bort en h
+    start_min = start_min + 60; // lägg till 60 minuter, ex -30 + 60 = 30. tiden blir 6:00 istället för 7:-30
+  }
+}
+
+void start_wake() { // funktionen som börjar att långsamt dimma lampan, ända tills det är dags att vakna
+  
+  boolean quitState = false; // om vi ska avbryta snurran
+  // förbered tiderna
+  int sub = wake_interval / 3; // 1/3 av tiden ska lampan lysa med full styrka
+  int dimming_times = wake_interval - sub; // förkorta så att lampan lyser med full styrka innan larmet
+  dimming_times = dimming_times * 60; // hur många gånger loopen ska gå, gör om det till secunder
+  dimming_times = dimming_times / 10; // gör om det till 10s gruppes
+  
+  lightState = HIGH; // tala om att lampan är på
+  
+  for(int time = 1; time <= dimming_times; time++) { // loopen som dimmar ljuset
+  
+    if(quitState) // om knappen var tryckt
+      break; // avbryt loopen
+      
+    analog = map(time, 0, dimming_times, 0, 255); // gör om minutrarna till PWM värden
+    analog = constrain(analog, 0, 255); // vara säker på att PWM värderna inte går över 255
+    analogWrite(light, analog);
+
+    int wait = sec/10; // wait och mins har samma värde
+    while(wait == sec/10) { // medans den väntar, om min är inte som wait, betyder det att det har gått en minut
+      
+      printTime(); // visa tiden
+        
+      if(onoff_back.check() == Pressed) {// om avbryt knappen är tryckt
+        quitWake(); // avbryt dimningen
+        quitState = true; // kommer sedan att avbryta for loopen
+        break; // lämna loopen
+      }
+    }
+  }
+  alarmReady = true; // dags att när tiden är inne
+}
+  
+  
+
+void quitWake() { // funktionen som avbryter dimningen av ljuset
+  
+  buzzerOff();
+  alarmReady = false; // igen idé att starta larmet
+  alarm = false; // stäng larmet
+}
+
+void checkButton() // vad varje knapp ska göra i normaläge
+{
+  if(onoff_back.check() == Pressed && alarm == false)  {// sätt på eller stäng av väckningen
+    wakeState = !wakeState;
+  }
+  else if(menu.check() == Pressed) { // om set knappen är tryckt, gå till menyn
+    choose_set(); // ställ om klockan
+  }
+ 
+  else if(next.check() == Pressed && alarm == false) { // tänd lampan i normaläge
+    
+    if(lightState == LOW) {
+      analogWrite(light, 255);
+      lightState = HIGH;
+    }
+    else {
+      analogWrite(light, 0);  
+      lightState = LOW;
+    }
+  }
+}
+
+void buzzerOn() { // för piezon, använder millis istället för delay.
+  
+  unsigned long time = millis(); // hur många millis
+  
+  if(time - prev > 50) { // om tiden blir högre än intervallen
+    
+    prev = time;
+    
+    buzzerState = !buzzerState;
+    digitalWrite(buzzer, buzzerState);
+  }
+}
+
+void buzzerOff() {
+  
+  digitalWrite(buzzer, LOW);
+}
+
+void buzz(int times) { 
+  
+  for(int x = 1; x<=times; x++) {
+    digitalWrite(buzzer, HIGH);
+    delay(50);
+    digitalWrite(buzzer, LOW);
+    delay(50);
+  }
+}
+
+void resetLED_TIME() { // återställ timern för ljuset till lcd'n
+  
+  lastLED_TIME = millis();
+}
+
+void lcd_LED() { // timer för hur länge ljuset ska lysa
+  
+  if((millis() - lastLED_TIME) < 5000) // hur länge den ska lysa
+    digitalWrite(lcdLED, HIGH);
+    
+  else // när den är klar så stäng av den igen
+    digitalWrite(lcdLED, LOW);
+}  
+
+void choose_set() { // menyn för att ställa klockan
+
+  lcd.clear(); // ta bort allt som står på lcd'n
+  lcd.print("Set");
+  
+  int menuPoint = 0; // vilken ordning man ska ställa tiden
+  boolean stay = true; // för snurran som ställer tiden.
+  
+  while(stay) { // stanna här i snurran så tiden kan ställas
+    lcd.setCursor(4,0);
+    lcd_LED();
+    
+    if(next.check() == Pressed) {  // om nästa, så gå vidare till nästa steg
+      menuPoint = true;
+    }
+    if(onoff_back.check() == Pressed) {  // om nästa, så gå vidare till nästa steg
+      menuPoint = false;
+    }
+    else if(menu.check() == Pressed) {  // om meny knappen är tryckt, lämna menyn
+      stay = false; // lämna snurran
+      lcd.clear();
+    }
+    
+    switch(menuPoint) {
+      case 0: // ställ klockan
+      lcd.print("TIME       ");
+      if(select.check() == Pressed) {
+        stay = false; // lämna snurran
+        setClock(); // ställ tiden
+      }
+      break;
+      
+      case 1: 
+      lcd.print("ALARM       ");
+      if(select.check() == Pressed) {
+        stay = false; // lämna snurran
+        setAlarm(); // ställ tiden 
+      }
+      break;
+    }
+  }
+}
+void setClock() { // funktionen för att ställa tiden
+
+  lcd.clear(); // ta bort allt som står på lcd'n
+  
+  int setPoint = 0; // vilken ordning man ska ställa tiden
+  boolean setState = true; // för snurran som ställer tiden.
+  
+  while(setState) { // stanna här i snurran så tiden kan ställas
+    
+    lcd.setCursor(0,0);
+    lcd_LED();
+    
+    if(select.check() == Pressed) {  // om nästa, så gå vidare till nästa steg
+      setPoint++;
+    }
+    
+    switch(setPoint) {
+      case 0: // börja med att ställa timmarna
+      lcd.print("Set Hour ");
+      if(hr < 10) // skriv en nolla om värdet är mindre än 10
+        lcd.print("0");
+      lcd.print(hr);
+      if(next.check() == Pressed) { // om set knappen är tryckt
+        hr++; // öka timmarna med en
+        if(hr > 23) // om hr blir mer än 23h
+          hr = 0; // återställ till 0
+      }
+      if(onoff_back.check() == Pressed) { // ställ tiden åt andra hållet
+        hr--; // öka timmarna med en
+        if(hr < 0) // om hr blir mindre än 0h
+          hr = 23; // återställ till 23
+      }
+      break;
+      
+      case 1: // minutrar
+      lcd.print("Set Mins ");
+      if(mins < 10) // skriv en nolla om värdet är mindre än 10
+        lcd.print("0");
+      lcd.print(mins);
+      if(next.check() == Pressed) { // om set knappen är tryckt
+        mins++; // öka timmarna med en
+        if(mins > 59) // om det blir mer än 59 min
+          mins = 0; // återställ mins
+      }
+      if(onoff_back.check() == Pressed) { // om set knappen är tryckt
+        mins--; // öka timmarna med en
+        if(mins < 0) // om det blir mindre än 0 min
+          mins = 59; // återställ mins
+      }
+      break;
+      
+      case 2: // ställ vilken dag
+      lcd.print("Set Day ");
+      lcd.print(day[Num_day]);
+      lcd.print("   "); // ta bort det andra som står på lcd'n
+      if(next.check() == Pressed) { // om set knappen är tryckt
+        Num_day++; // öka timmarna med en
+        if(Num_day > 6) // om dagarna blir mer än 7
+          Num_day = 0; // återställ till 1
+      }
+      if(onoff_back.check() == Pressed) { // om set knappen är tryckt
+        Num_day--; // öka timmarna med en
+        if(Num_day < 0) // om dagarna blir mindre än 0
+          Num_day = 6; // återställ till 1
+      }
+      break;
+      
+      case 3: // nu är tiden klar
+      setState = false; // lämna snurran
+      // ställ klockan med de nya tiderna
+      RTC.stop();
+      RTC.set(DS1307_SEC,0);        //set the seconds
+      RTC.set(DS1307_MIN,mins);     //set the minutes
+      RTC.set(DS1307_HR,hr);       //set the hours
+      RTC.set(DS1307_DOW,Num_day+1);
+      RTC.start();
+      
+      lcd.clear();
+      lcd.print("Time Set");
+      delay(1000);
+      lcd.clear();
+    }
+    
+  }
+  choose_set(); // tillbaka till menyn
+}
+
+void setAlarm() { // funktionen för att ställa tiden för alarmet
+
+  lcd.clear(); // ta bort allt som står på lcd'n
+  
+  int setPoint = 0; // vilken ordning man ska ställa tiden
+  boolean setState = true; // för snurran som ställer tiden.
+  
+  while(setState) { // stanna här i snurran så tiden kan ställas
+    
+    lcd.setCursor(0,0);
+    lcd_LED();
+    
+    if(select.check() == Pressed) {  // om nästa, så gå vidare till nästa steg
+      setPoint++;
+    }
+    switch(setPoint) {
+      case 0: // börja med att ställa timmarna
+      lcd.print("Set Hour AL ");
+      if(alarm_hr < 10)
+        lcd.print("0");
+      lcd.print(alarm_hr);
+      
+      if(next.check() == Pressed) { // om set knappen är tryckt
+        alarm_hr++; // öka timmarna med en
+        if(alarm_hr > 23) // om hr blir mer än 23h
+          alarm_hr = 0; // återställ till 0
+      }
+      if(onoff_back.check() == Pressed) { // om set knappen är tryckt
+        alarm_hr--; // öka timmarna med en
+        if(alarm_hr < 0) // om hr blir mindre än 0h
+          alarm_hr = 23; // återställ till 0
+      }
+      break;
+      
+      case 1: // minutrar
+      lcd.print("Set Mins AL ");
+      if(alarm_min < 10) 
+        lcd.print("0");
+      lcd.print(alarm_min);
+      
+      if(next.check() == Pressed) { // om set knappen är tryckt
+        alarm_min++; // öka timmarna med en
+        if(alarm_min > 59) // om det blir mer än 59 min
+          alarm_min = 0; // återställ mins
+      }
+      if(onoff_back.check() == Pressed) { // om set knappen är tryckt
+        alarm_min--; // öka timmarna med en
+        if(alarm_min < 0) // om det blir mer än 59 min
+          alarm_min = 59; // återställ mins
+      }
+      break;
+      
+      case 2: // nu är tiden klar
+      setState = false; // lämna snurran
+      creatnew_time(wake_interval); // skapa en tid för när lampan ska börja dimma
+      
+      lcd.clear();
+      lcd.print("Alarm Set");
+      delay(1000);
+      lcd.clear();
+    }
+  }  
+  choose_set(); // tillbaka till menyn
+}
+
+
+
+    
+
